@@ -524,16 +524,6 @@ export class NixiePumpRS485 extends NixiePump {
                 try { if (!this.closing) await this.setDriveStateAsync(); } catch (err) { }
                 try {
                     if (!this.closing) {
-                        //if the target speed is off, then slow the pump before stopping to protect the pump
-                        if(this._targetSpeed == 0)
-                        {
-                            this._targetSpeed = pt.minSpeed;
-                            await this.setPumpRPMAsync();
-                            await utils.sleep(2000);
-                            this._targetSpeed = 0;
-                            await this.setPumpRPMAsync();
-                        }
-
                         if (this._targetSpeed >= pt.minFlow && this._targetSpeed <= pt.maxFlow) await this.setPumpGPMAsync();
                         else if (this._targetSpeed >= pt.minSpeed && this._targetSpeed <= pt.maxSpeed) await this.setPumpRPMAsync();
                     }
