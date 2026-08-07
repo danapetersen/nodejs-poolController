@@ -184,13 +184,15 @@ export class NixiePump extends NixieEquipment {
         let pstate = state.pumps.getItemById(this.pump.id);
         await this.setPumpStateAsync(pstate);
     }
-    protected static readonly rampDownMs = 5000;
-    protected static readonly rampStepMs = 250;
+    protected static readonly rampHoldMs = 4000;
+    protected static readonly rampDefaultIdleRpm = 500;
+    protected static readonly rampDefaultIdleGpm = 20;
     protected _rampTimer: NodeJS.Timeout = null;
     protected _rampingDown = false;
     // Variable-speed/flow pump types call this instead of assigning _targetSpeed directly so that a
-    // drop to 0 eases the commanded speed down over rampDownMs rather than slamming the motor to a stop.
-    // A new non-zero target cancels any ramp in progress and is applied immediately.
+    // drop to 0 first drops to a low idle speed and holds there briefly — letting the pump's own motor
+    // decelerate naturally — rather than commanding a dead stop straight from full speed. A new
+    // non-zero target cancels any ramp in progress and is applied immediately.
     protected setSpeedWithRamp(_newSpeed: number, isRPM: boolean) {
         if (_newSpeed > 0 || this.closing) {
             this.cancelRampDown();
@@ -198,6 +200,10 @@ export class NixiePump extends NixieEquipment {
             return;
         }
         if (this._targetSpeed <= 0 || this._rampingDown) return;
+        // Something other than the ramp itself currently owns suspendPolling (e.g. syncPumpStates calling
+        // us directly while a full poll cycle is already in flight) — don't start a second concurrent
+        // sender against the same pump. The next call once that finishes will pick this up cleanly.
+        if (this.suspendPolling) return;
         this.beginRampDown(isRPM);
     }
     protected cancelRampDown() {
@@ -206,35 +212,30 @@ export class NixiePump extends NixieEquipment {
     }
     protected beginRampDown(isRPM: boolean) {
         this._rampingDown = true;
-        // Pause the normal maintenance poll cycle while we are stepping the speed down ourselves.
+        // Pause the normal maintenance poll cycle for the duration of the idle hold.
         this.suspendPolling = true;
         let startSpeed = this._targetSpeed;
-        let steps = Math.max(1, Math.round(NixiePump.rampDownMs / NixiePump.rampStepMs));
-        let stepNum = 0;
-        logger.info(`NCP: Ramping Pump ${this.pump.name} down from ${startSpeed} ${isRPM ? 'RPM' : 'GPM'} to 0 over ${NixiePump.rampDownMs / 1000}s.`);
-        let doStep = async () => {
-            this._rampTimer = null;
-            if (this.closing || state.mode !== 0) { this._rampingDown = false; this.suspendPolling = false; return; }
-            stepNum++;
-            let remaining = Math.max(0, steps - stepNum);
-            this._targetSpeed = Math.round(startSpeed * remaining / steps);
+        let floor = isRPM ? (this.pump.minSpeed || NixiePump.rampDefaultIdleRpm) : (this.pump.minFlow || NixiePump.rampDefaultIdleGpm);
+        let idleSpeed = Math.min(startSpeed, floor);
+        logger.info(`NCP: Dropping Pump ${this.pump.name} to idle ${idleSpeed} ${isRPM ? 'RPM' : 'GPM'} (from ${startSpeed}) before stopping.`);
+        (async () => {
+            this._targetSpeed = idleSpeed;
             try {
-                if (this._targetSpeed > 0) {
-                    if (isRPM) await this.setPumpRPMAsync(); else await this.setPumpGPMAsync();
-                }
-            } catch (err) { logger.error(`NCP: Error ramping pump ${this.pump.name} speed: ${err.message}`); }
-            if (this.closing || state.mode !== 0) { this._rampingDown = false; this.suspendPolling = false; return; }
-            if (this._targetSpeed > 0) {
-                this._rampTimer = setTimeoutSync(doStep, NixiePump.rampStepMs);
-            }
-            else {
+                if (isRPM) await this.setPumpRPMAsync(); else await this.setPumpGPMAsync();
+            } catch (err) { logger.error(`NCP: Error dropping pump ${this.pump.name} to idle speed: ${err.message}`); }
+            // A new target may have arrived (and cancelled us) while the idle-speed command was in flight —
+            // don't schedule the stop, and don't touch _targetSpeed, if we're no longer the active ramp.
+            if (this.closing || !this._rampingDown) { this._rampingDown = false; this.suspendPolling = false; return; }
+            this._rampTimer = setTimeoutSync(async () => {
+                this._rampTimer = null;
+                if (this.closing || !this._rampingDown) { this._rampingDown = false; this.suspendPolling = false; return; }
                 this._rampingDown = false;
                 this.suspendPolling = false;
-                // Finish with the normal stop sequence now that the speed has eased down to 0.
+                this._targetSpeed = 0;
+                // Finish with the normal stop sequence now that the pump has had time to decelerate to idle.
                 try { await this.setPumpStateAsync(state.pumps.getItemById(this.pump.id)); } catch (err) { }
-            }
-        };
-        this._rampTimer = setTimeoutSync(doStep, NixiePump.rampStepMs);
+            }, NixiePump.rampHoldMs);
+        })();
     }
     protected async setPumpRPMAsync(): Promise<void> { }
     protected async setPumpGPMAsync(): Promise<void> { }
@@ -352,7 +353,10 @@ export class NixiePump extends NixieEquipment {
             }
             let pstate = state.pumps.getItemById(this.pump.id);
             this.setTargetSpeed(pstate);
-            await this.setPumpStateAsync(pstate);
+            // setTargetSpeed can itself suspend polling (e.g. it just kicked off a ramp-down), in which
+            // case the ramp owns sending updates now — running the full cycle here too would send a stale,
+            // pre-ramp target speed and race the ramp's own outbound messages.
+            if (!this.suspendPolling) await this.setPumpStateAsync(pstate);
         }
         catch (err) { logger.error(`Nixie Error running pump sequence - ${err}`); }
         finally { if (!self.closing) this._pollTimer = setTimeoutSync(async () => await self.pollEquipmentAsync(), self.pollingInterval || 2000); }
