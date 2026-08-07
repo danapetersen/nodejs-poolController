@@ -184,60 +184,6 @@ export class NixiePump extends NixieEquipment {
         let pstate = state.pumps.getItemById(this.pump.id);
         await this.setPumpStateAsync(pstate);
     }
-    protected static readonly rampDownMs = 5000;
-    protected static readonly rampStepMs = 250;
-    protected _rampTimer: NodeJS.Timeout = null;
-    protected _rampingDown = false;
-    // Variable-speed/flow pump types call this instead of assigning _targetSpeed directly so that a
-    // drop to 0 eases the commanded speed down over rampDownMs rather than slamming the motor to a stop.
-    // A new non-zero target cancels any ramp in progress and is applied immediately.
-    protected setSpeedWithRamp(_newSpeed: number, isRPM: boolean) {
-        if (_newSpeed > 0 || this.closing) {
-            this.cancelRampDown();
-            this._targetSpeed = _newSpeed;
-            return;
-        }
-        if (this._targetSpeed <= 0 || this._rampingDown) return;
-        this.beginRampDown(isRPM);
-    }
-    protected cancelRampDown() {
-        if (this._rampTimer) { clearTimeout(this._rampTimer); this._rampTimer = null; }
-        if (this._rampingDown) { this._rampingDown = false; this.suspendPolling = false; }
-    }
-    protected beginRampDown(isRPM: boolean) {
-        this._rampingDown = true;
-        // Pause the normal maintenance poll cycle while we are stepping the speed down ourselves.
-        this.suspendPolling = true;
-        let startSpeed = this._targetSpeed;
-        let steps = Math.max(1, Math.round(NixiePump.rampDownMs / NixiePump.rampStepMs));
-        let stepNum = 0;
-        logger.info(`NCP: Ramping Pump ${this.pump.name} down from ${startSpeed} ${isRPM ? 'RPM' : 'GPM'} to 0 over ${NixiePump.rampDownMs / 1000}s.`);
-        let doStep = async () => {
-            this._rampTimer = null;
-            if (this.closing || state.mode !== 0) { this._rampingDown = false; this.suspendPolling = false; return; }
-            stepNum++;
-            let remaining = Math.max(0, steps - stepNum);
-            this._targetSpeed = Math.round(startSpeed * remaining / steps);
-            try {
-                if (this._targetSpeed > 0) {
-                    if (isRPM) await this.setPumpRPMAsync(); else await this.setPumpGPMAsync();
-                }
-            } catch (err) { logger.error(`NCP: Error ramping pump ${this.pump.name} speed: ${err.message}`); }
-            if (this.closing || state.mode !== 0) { this._rampingDown = false; this.suspendPolling = false; return; }
-            if (this._targetSpeed > 0) {
-                this._rampTimer = setTimeoutSync(doStep, NixiePump.rampStepMs);
-            }
-            else {
-                this._rampingDown = false;
-                this.suspendPolling = false;
-                // Finish with the normal stop sequence now that the speed has eased down to 0.
-                try { await this.setPumpStateAsync(state.pumps.getItemById(this.pump.id)); } catch (err) { }
-            }
-        };
-        this._rampTimer = setTimeoutSync(doStep, NixiePump.rampStepMs);
-    }
-    protected async setPumpRPMAsync(): Promise<void> { }
-    protected async setPumpGPMAsync(): Promise<void> { }
     /*
     _targetSpeed will hold values as follows:
     vs/vsf/vf: rpm/gpm;
@@ -372,7 +318,6 @@ export class NixiePump extends NixieEquipment {
             logger.info(`Nixie Pump closing ${this.pump.name}.`)
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
-            this.cancelRampDown();
             this._targetSpeed = 0;
             let pstate = state.pumps.getItemById(this.pump.id);
             try {
@@ -606,7 +551,6 @@ export class NixiePumpHWRLY extends NixiePumpDS {
 }
 export class NixiePumpRS485 extends NixiePump {
     public async setServiceModeAsync() {
-        this.cancelRampDown();
         this._targetSpeed = 0;
         await this.setDriveStateAsync(false);
     }
@@ -772,7 +716,6 @@ export class NixiePumpRS485 extends NixiePump {
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
             this.closing = true;
-            this.cancelRampDown();
             let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
             let pstate = state.pumps.getItemById(this.pump.id);
             this._targetSpeed = 0;
@@ -804,9 +747,9 @@ export class NixiePumpVS extends NixiePumpRS485 {
             }
         }
         if (isNaN(_newSpeed)) _newSpeed = 0;
-        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} RPM.`);
-        this.setSpeedWithRamp(_newSpeed, true);
+        this._targetSpeed = _newSpeed;
         if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minSpeed, this._targetSpeed), this.pump.maxSpeed);
+        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} RPM.`);
     }
 }
 export class NixiePumpVF extends NixiePumpRS485 {
@@ -821,9 +764,9 @@ export class NixiePumpVF extends NixiePumpRS485 {
             }
         }
         if (isNaN(_newSpeed)) _newSpeed = 0;
-        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} GPM.`);
-        this.setSpeedWithRamp(_newSpeed, false);
+        this._targetSpeed = _newSpeed;
         if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minFlow, this._targetSpeed), this.pump.maxFlow);
+        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} GPM.`);
     }
     public async setPumpStateAsync(pstate: PumpState) {
         // Don't poll while we are seting the state.
@@ -906,7 +849,7 @@ export class NixiePumpVSF extends NixiePumpRS485 {
         if (isNaN(_newSpeed)) _newSpeed = 0;
         // Send the flow message if it is flow and the rpm message if it is rpm.
         if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} ${useFlow ? 'GPM' : 'RPM'}.`);
-        this.setSpeedWithRamp(_newSpeed, !useFlow);
+        this._targetSpeed = _newSpeed;
     }
     protected async setPumpRPMAsync() {
         // vsf action is 10 for rpm
@@ -963,12 +906,11 @@ export class NixiePumpHWVS extends NixiePumpRS485 {
             }
         }
         if (isNaN(_newSpeed)) _newSpeed = 0;
-        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} RPM.`);
-        this.setSpeedWithRamp(_newSpeed, true);
+        this._targetSpeed = _newSpeed;
         if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minSpeed, this._targetSpeed), this.pump.maxSpeed);
+        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} RPM.`);
     }
     public async setServiceModeAsync() {
-        this.cancelRampDown();
         this._targetSpeed = 0;
         await this.setPumpRPMAsync();
     }
@@ -1080,13 +1022,12 @@ export class NixiePumpRegalModbus extends NixiePump {
             }
         }
         if (isNaN(newSpeed)) newSpeed = 0;
-        if (this._targetSpeed !== newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${newSpeed} RPM.`);
-        this.setSpeedWithRamp(newSpeed, true);
+        this._targetSpeed = newSpeed;
         if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minSpeed, this._targetSpeed), this.pump.maxSpeed);
+        if (this._targetSpeed !== newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${newSpeed} RPM.`);
     }
-
+    
     public async setServiceModeAsync() {
-        this.cancelRampDown();
         this._targetSpeed = 0;
         await this.setDriveStateAsync(false);
         // await this.setPumpToRemoteControlAsync(false);
@@ -1240,7 +1181,6 @@ export class NixiePumpRegalModbus extends NixiePump {
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
             this.closing = true;
-            this.cancelRampDown();
             let pumpType = sys.board.valueMaps.pumpTypes.get(this.pump.type);
             let pumpState = state.pumps.getItemById(this.pump.id);
             this._targetSpeed = 0;
@@ -1279,13 +1219,12 @@ export class NixiePumpNeptuneModbus extends NixiePump {
             }
         }
         if (isNaN(newSpeed)) newSpeed = 0;
-        if (this._targetSpeed !== newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${newSpeed} RPM.`);
-        this.setSpeedWithRamp(newSpeed, true);
+        this._targetSpeed = newSpeed;
         if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minSpeed, this._targetSpeed), this.pump.maxSpeed);
+        if (this._targetSpeed !== newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${newSpeed} RPM.`);
     }
 
     public async setServiceModeAsync() {
-        this.cancelRampDown();
         this._targetSpeed = 0;
         await this.setDriveStateAsync(false);
     }
@@ -1386,7 +1325,6 @@ export class NixiePumpNeptuneModbus extends NixiePump {
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
             this.closing = true;
-            this.cancelRampDown();
             const pumpState = state.pumps.getItemById(this.pump.id);
             this._targetSpeed = 0;
             await this.setDriveStateAsync(false);
