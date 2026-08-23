@@ -189,14 +189,63 @@ export class HeaterStateMessage {
             (h.type === jxiType || h.type === lxiType) && h.isActive !== false
         );
         if (typeof heater === 'undefined') { msg.isProcessed = true; return; }
-        // Temperature is at payload byte 6 (after DLE-unstuffing).
-        // Response format: [GVhours_hi, GVhours_lo, cycles_hi, cycles_lo, unk, unk, temp+20]
+        let sheater = state.heaters.getItemById(heater.id);
+        // Response format (after DLE-unstuffing, 7 bytes):
+        // [GVhours_lo, GVhours_hi, cycles_lo, cycles_hi, lastFault, prevFault, temp+20]
+        // Both 16-bit fields are little-endian (low byte first).
+        let gvHours = msg.extractPayloadByte(0, 0) | (msg.extractPayloadByte(1, 0) << 8);
+        let cycles = msg.extractPayloadByte(2, 0) | (msg.extractPayloadByte(3, 0) << 8);
+        sheater.gasValveHours = gvHours;
+        sheater.cycleCount = cycles;
+        // Data[4] = last fault, Data[5] = previous fault
+        let lastFault = msg.extractPayloadByte(4, 0);
+        let prevFault = msg.extractPayloadByte(5, 0);
+        HeaterStateMessage.processJxiFaultCode(heater, lastFault);
         let tempByte = msg.extractPayloadByte(6);
         if (typeof tempByte !== 'undefined' && tempByte > 20) {
             let tempF = tempByte - 20;
-            logger.info(`JXi heater ${heater.name}: water temp ${tempF}°F`);
+            logger.info(`JXi heater ${heater.name}: water temp ${tempF}°F gvHours=${gvHours} cycles=${cycles}`);
+            if (heater.feedBodyTemp) {
+                // Feed heater-reported water temp to the assigned body when body is running.
+                // heater.body: 0=pool(bodyId 1), 1=spa(bodyId 2), 32=shared(active body)
+                let bodyId = heater.body === 1 ? 2 : 1;
+                if (heater.body === 32) {
+                    let active = state.temps.bodies.find(elem => elem.isOn);
+                    if (typeof active !== 'undefined') bodyId = active.id;
+                }
+                let body = state.temps.bodies.getItemById(bodyId);
+                if (body.isOn) {
+                    if (bodyId === 1) {
+                        state.temps.waterSensor1 = tempF;
+                    } else if (bodyId === 2) {
+                        state.temps.waterSensor2 = tempF;
+                    }
+                    body.temp = tempF;
+                }
+            }
         }
         msg.isProcessed = true;
+    }
+    private static processJxiFaultCode(heater: Heater, faultCode: number) {
+        // Fault codes from 0x25 response Data[4] (last fault)
+        const code = `heater:${heater.id}:fault`;
+        if (faultCode === 0x00) {
+            state.equipment.messages.removeItemByCode(code);
+            return;
+        }
+        let desc: string;
+        switch (faultCode) {
+            case 0xF0: desc = 'Open flue sensor'; break;
+            case 0xF2: desc = 'Check louver'; break;
+            case 0xF3: desc = 'Check Versaflo'; break;
+            case 0xF5: desc = 'Check ignition control'; break;
+            case 0xFB: desc = 'Shorted water sensor'; break;
+            case 0xFC: desc = 'Open water sensor'; break;
+            case 0xFD: desc = 'High limit'; break;
+            case 0xFE: desc = 'AUX monitor'; break;
+            default: desc = `Unknown fault 0x${faultCode.toString(16)}`; break;
+        }
+        state.equipment.messages.setMessageByCode(code, 'error', `${heater.name}: ${desc}`);
     }
 
 }

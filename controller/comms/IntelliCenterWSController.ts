@@ -177,13 +177,15 @@ function parseDayMask(val: string): number {
     if (!val) return 0;
     let mask = 0;
     const upper = val.toUpperCase();
-    if (upper.includes('U')) mask |= 0x01;
-    if (upper.includes('M')) mask |= 0x02;
-    if (upper.includes('T') && !upper.includes('TH') || (upper.indexOf('T') !== upper.lastIndexOf('T'))) mask |= 0x04;
-    if (upper.includes('W')) mask |= 0x08;
-    if (upper.includes('R')) mask |= 0x10;
-    if (upper.includes('F')) mask |= 0x20;
-    if (upper.includes('A')) mask |= 0x40;
+    // OCP DAY letters are M,T,W,R,F,A,U for Mon..Sun (Thursday is 'R', Saturday is
+    // 'A').  They map onto IntelliCenter's scheduleDays bitmask of mon=1..sun=64.
+    if (upper.includes('M')) mask |= 0x01;
+    if (upper.includes('T')) mask |= 0x02;
+    if (upper.includes('W')) mask |= 0x04;
+    if (upper.includes('R')) mask |= 0x08;
+    if (upper.includes('F')) mask |= 0x10;
+    if (upper.includes('A')) mask |= 0x20;
+    if (upper.includes('U')) mask |= 0x40;
     if (mask === 0) {
         const n = parseIntSafe(val);
         if (n > 0) return n;
@@ -415,6 +417,7 @@ function decodeBody(objnam: string, params: ParamMap): void {
     if (typeof params['STATUS'] !== 'undefined') {
         sbody.isOn = parseBool(params['STATUS']);
         syncValveStatesWS();
+        syncChlorinatorOutputWS();
         sys.board.circuits.syncVirtualCircuitStates();
     }
     if (typeof params['TEMP'] !== 'undefined') {
@@ -525,8 +528,46 @@ function decodeSchedule(objnam: string, params: ParamMap): void {
         sched.scheduleType = st; ssched.scheduleType = st;
     }
     if (typeof params['HEATER'] !== 'undefined') {
-        const hs = parseIntSafe(params['HEATER']);
+        const hval = (params['HEATER'] || '').toUpperCase();
+        let hs = 0;
+        if (hval === 'HOLD') {
+            hs = 0; // OCP "HOLD" = "Don't Change"
+        } else if (hval === '00000' || hval === '' || hval === '0' || hval === 'NONE') {
+            hs = 1; // No heater = Off
+        } else if (hval === 'HXSLR') {
+            hs = 4; // OCP objnam for Solar Preferred (verified)
+        } else if (hval === 'HXULT' || hval === 'HXUT') {
+            hs = 6; // OCP objnam for UltraTemp Preferred (verified as HXULT; HXUT accepted
+                    // on read only, since older njsPC builds wrote that wrong value)
+        } else if (hval === 'HXHTP') {
+            hs = 15; // HeatPump Preferred — objnam unverified, no heat pump available
+        } else {
+            // Resolve heater object name to heatSource enum via heater type
+            const hid = parseInt(hval.replace(/\D/g, ''), 10);
+            const heater = hid > 0 ? sys.heaters.find(h => h.id === hid && h.isActive) : undefined;
+            if (heater) {
+                // heaterType 1=gas→heatSource2, 2=solar→3, 3=heatpump→14(v3), 4=ultratemp→5
+                switch (heater.type) {
+                    case 1: hs = 2; break;  // gas → heater
+                    case 2: hs = 3; break;  // solar → solar
+                    case 3: hs = 14; break; // heatpump → heatpump (v3 value)
+                    case 4: hs = 5; break;  // ultratemp → ultratemp
+                    default: hs = 2; break; // fallback to generic heater
+                }
+            } else {
+                hs = 1; // Can't resolve → off
+            }
+        }
         sched.heatSource = hs; ssched.heatSource = hs;
+    }
+    if (typeof params['MODE'] !== 'undefined') {
+        // MODE in schedule context is the heat source enum directly
+        const m = parseIntSafe(params['MODE']);
+        if (m === 0) {
+            sched.heatSource = 0; ssched.heatSource = 0; // 0 = "Don't Change"
+        } else if (sys.board.valueMaps.heatSources.valExists(m)) {
+            sched.heatSource = m; ssched.heatSource = m;
+        }
     }
     if (typeof params['LOTMP'] !== 'undefined') {
         const ht = parseIntSafe(params['LOTMP']);
@@ -708,7 +749,22 @@ function decodeHeater(objnam: string, params: ParamMap): void {
     if (typeof params['COOL'] !== 'undefined') heater.coolingEnabled = parseBool(params['COOL']);
     if (typeof params['DLY'] !== 'undefined') heater.cooldownDelay = parseIntSafe(params['DLY']);
     if (typeof params['BOOST'] !== 'undefined') heater.maxBoostTemp = parseIntSafe(params['BOOST']);
-    if (typeof params['COMUART'] !== 'undefined') heater.address = parseIntSafe(params['COMUART']);
+    // On a HEATER, START/STOP are the numeric start/stop temp deltas.  Do NOT reuse the SCHED
+    // interpretation (SRIS/SSET/ABSTIM time types) — same key names, different meaning.
+    // Verified: changing Start/Stop Temp Delta to 9/5 at the OCP pushes START=9, STOP=5.
+    if (typeof params['START'] !== 'undefined') heater.startTempDelta = parseIntSafe(params['START']);
+    if (typeof params['STOP'] !== 'undefined') heater.stopTempDelta = parseIntSafe(params['STOP']);
+    if (typeof params['COMUART'] !== 'undefined') {
+        // COMUART is the 1-based unit index shown as "Heater Address" on the OCP.  njsPC's
+        // canonical heater.address is the RS-485 bus address (112-128), so unit N => 111 + N.
+        // Verified on i5P/ICv3: OCP address 2 => COMUART=2, OCP address 4 => COMUART=4.
+        // COMUART=0 means "no address assigned" — non-addressable types (solar/gas) always
+        // report 0, and an addressable heater the OCP just created also starts at 0.  It must
+        // NOT decode to 111, which is not a valid bus address.
+        const htype = sys.board.valueMaps.heaterTypes.transform(heater.type);
+        const unit = parseIntSafe(params['COMUART']);
+        heater.address = (htype.hasAddress && unit > 0) ? unit + 111 : 0;
+    }
     heater.isActive = true;
     sheater.isActive = true;
     sys.board.heaters.updateHeaterServices();
@@ -724,7 +780,7 @@ function encodeHeaterType(subtyp: string): number {
         case 'ULTRA': case 'ULTRATEMP': return 4;
         case 'HYBRID': case 'HCOMBO': return 5;
         case 'MASTER': case 'MSTR': return 6;
-        case 'MAXE': return 7;
+        case 'MAX': case 'MAXE': return 7;
         case 'ETI250': case 'ETI': return 8;
         default:
             if (s && s !== 'NONE' && s !== '') logger.info(`encodeHeaterType: unknown SUBTYP='${subtyp}'`);
@@ -753,6 +809,24 @@ function syncValveStatesWS(): void {
             isDiverted = circ ? circ.isOn : false;
         }
         vstate.isDiverted = isDiverted;
+    }
+}
+
+// The IntelliCenter WS API exposes only the setpoints (PRIM/SEC), SALT, SUPER and TIMOUT
+// for CHR objects -- there is no live output telemetry key the way RS-485 has Action 18/22.
+// Derive the output from the active body + setpoint exactly as the RS-485 path does
+// (ChlorinatorMessage.ts:216-217, ChlorinatorStateMessage.ts:125) so dashPanel, MQTT and
+// InfluxDB see the same fields on both transports.
+function syncChlorinatorOutputWS(): void {
+    for (let i = 0; i < sys.chlorinators.length; i++) {
+        const chlor = sys.chlorinators.getItemByIndex(i);
+        if (!chlor.isActive) continue;
+        const schlor = state.chlorinators.getItemById(chlor.id);
+        let target = 0;
+        if (state.temps.bodies.getItemById(1).isOn) target = chlor.disabled ? 0 : chlor.poolSetpoint;
+        else if (state.temps.bodies.getItemById(2).isOn) target = chlor.disabled ? 0 : chlor.spaSetpoint;
+        schlor.targetOutput = target;
+        schlor.currentOutput = chlor.disabled ? 0 : target || schlor.setPointForCurrentBody;
     }
 }
 
@@ -827,6 +901,12 @@ function decodeChlorinator(objnam: string, params: ParamMap): void {
     if (typeof params['BODY'] !== 'undefined') { chlor.body = parseIntSafe(params['BODY']); schlor.body = parseIntSafe(params['BODY']); }
     if (typeof params['SUBTYP'] !== 'undefined') { chlor.type = parseIntSafe(params['SUBTYP']); schlor.type = parseIntSafe(params['SUBTYP']); }
     chlor.isActive = true;
+    schlor.isActive = true;
+    // WS has no chlorinator fault/comms telemetry.  The object only exists while the OCP
+    // reports it, so 0 ('Ok') is the correct status.  Leaving it unset yields -1, which
+    // blanks the dashPanel status line and hides the Super Chlorinate button.
+    if (schlor.status < 0) schlor.status = 0;
+    syncChlorinatorOutputWS();
 }
 
 function decodeCover(objnam: string, params: ParamMap): void {
@@ -913,21 +993,26 @@ function decodeSensor(objnam: string, params: ParamMap): void {
     }
     if (typeof params['CALIB'] !== 'undefined') {
         const cal = parseIntSafe(params['CALIB']);
-        sys.equipment.tempSensors[target] = cal;
+        sys.equipment.tempSensors.setCalibration(target, cal);
     }
     // OCP NotifyList delivers the live sensor reading on either PROBE or
     // SOURCE depending on the sensor (verified via Wireshark June 2026):
     //   SSS11 (solar1) -> {"SOURCE":"76"}
     //   _A135 (air)    -> {"PROBE":"72"}
     //   SSW11 (water1) -> PROBE
-    // Accept both keys and treat them as the same temperature value.
-    const probeVal = typeof params['PROBE'] !== 'undefined'
-        ? params['PROBE']
-        : (typeof params['SOURCE'] !== 'undefined' ? params['SOURCE'] : undefined);
-    if (typeof probeVal !== 'undefined') {
-        const temp = parseIntSafe(probeVal);
-        const which = typeof params['PROBE'] !== 'undefined' ? 'PROBE' : 'SOURCE';
-        logger.debug(`decodeSensor ${objnam}: target=${target} ${which}=${temp}`);
+    // PROBE is the calibrated reading; SOURCE is the raw sensor value.
+    // When only SOURCE arrives (push notifications), apply calibration offset.
+    let temp: number | undefined;
+    if (typeof params['PROBE'] !== 'undefined') {
+        temp = parseIntSafe(params['PROBE']);
+        logger.debug(`decodeSensor ${objnam}: target=${target} PROBE=${temp}`);
+    } else if (typeof params['SOURCE'] !== 'undefined') {
+        const raw = parseIntSafe(params['SOURCE']);
+        const cal = sys.equipment.tempSensors.getCalibration(target);
+        temp = raw + cal;
+        logger.debug(`decodeSensor ${objnam}: target=${target} SOURCE=${raw} +calib=${cal} =${temp}`);
+    }
+    if (typeof temp !== 'undefined') {
         if (target === 'air') state.temps.air = temp;
         else if (target === 'solar1') state.temps.solar = temp;
         else if (target === 'water1') {
@@ -1238,14 +1323,15 @@ export class IntelliCenterWSController {
                 break;
             }
             case 'SCHED': {
-                const existing = sys.schedules.find(elem => elem.id === id);
+                const schedId = id + 1;
+                const existing = sys.schedules.find(elem => elem.id === schedId);
                 if (typeof existing !== 'undefined') {
-                    const ssched = state.schedules.getItemById(id);
+                    const ssched = state.schedules.getItemById(schedId);
                     ssched.isActive = false;
                     existing.isActive = false;
                     ssched.emitEquipmentChange();
-                    state.schedules.removeItemById(id);
-                    sys.schedules.removeItemById(id);
+                    state.schedules.removeItemById(schedId);
+                    sys.schedules.removeItemById(schedId);
                 }
                 break;
             }
