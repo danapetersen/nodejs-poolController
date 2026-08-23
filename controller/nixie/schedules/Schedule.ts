@@ -52,7 +52,12 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
             let circuits: { circuitId: number, cstate: ICircuitState, hasNixie: boolean, sscheds: ScheduleState[] }[] = []
             for (let i = 0; i < sscheds.length; i++) {
                 // We only care about schedules that are currently running or should be running.
-                if (!sscheds[i].isOn && !sscheds[i].scheduleTime.shouldBeOn) continue;
+                if (!sscheds[i].isOn && !sscheds[i].scheduleTime.shouldBeOn) {
+                    if (sscheds[i].triggered) {
+                        logger.warn(`Schedule ${sscheds[i].id} (circuit ${sscheds[i].circuit}) has triggered=true while inactive — will not fire again until reset.`);
+                    }
+                    continue;
+                }
                 let circ = circuits.find(elem => elem.circuitId === sscheds[i].circuit);
                 let sched = sys.schedules.getItemById(sscheds[i].id)
                 if (typeof circ === 'undefined') circuits.push({

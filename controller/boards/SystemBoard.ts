@@ -2227,6 +2227,7 @@ export class CircuitCommands extends BoardCommands {
                 let c = sys.circuits.getItemByIndex(i);
                 let cstate = state.circuits.getItemByIndex(i);
                 if (!cstate.isActive || !cstate.isOn || typeof cstate.endTime === 'undefined') continue;
+                logger.warn(`Egg check: circuit ${c.id} isOn=${cstate.isOn} endTime=${cstate.endTime} now=${new Date().toISOString()}`);
                 if (c.master === 1) {
                     await ncp.circuits.checkCircuitEggTimerExpirationAsync(cstate);
                 }
@@ -2234,6 +2235,7 @@ export class CircuitCommands extends BoardCommands {
             for (let i = 0; i < sys.features.length; i++) {
                 let fstate = state.features.getItemByIndex(i);
                 if (!fstate.isActive || !fstate.isOn || typeof fstate.endTime === 'undefined') continue;
+                logger.warn(`Egg check: feature ${fstate.id} isOn=${fstate.isOn} endTime=${fstate.endTime} now=${new Date().toISOString()}`);
                 if (fstate.endTime.toDate() < new Timestamp().toDate()) {
                     await sys.board.circuits.setCircuitStateAsync(fstate.id, false);
                     fstate.emitEquipmentChange();
