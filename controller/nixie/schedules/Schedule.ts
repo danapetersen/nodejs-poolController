@@ -192,7 +192,6 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                                 if (!c.cstate.isOn) {
                                     logger.warn(`Schedule ${ssched.id} circuit ${c.circuitId}: setCircuitStateAsync returned but cstate.isOn is still false — marking triggered=true anyway. This may be why a scheduled circuit fails to turn on.`);
                                 }
-                                let ssched = c.sscheds[j];
                                 c.cstate.priority = 'scheduled';
                                 ssched.triggered = ssched.isOn = ssched.scheduleTime.shouldBeOn;
                                 ssched.manualPriorityActive = false;
