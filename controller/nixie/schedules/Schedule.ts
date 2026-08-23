@@ -103,7 +103,12 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
             // Now lets evaluate the schedules by virtue of their state related to the circuits.
             for (let i = 0; i < circuits.length; i++) {
                 let c = circuits[i];
-                if (!c.hasNixie) continue; // If this has nothing to do with Nixie move on.
+                if (!c.hasNixie) {
+                    if (c.sscheds.some(elem => elem.scheduleTime.shouldBeOn === true)) {
+                        logger.warn(`Schedule circuit ${c.circuitId} should be on but hasNixie=false — schedule master mismatch, skipping.`);
+                    }
+                    continue; // If this has nothing to do with Nixie move on.
+                }
                 let shouldBeOn = typeof c.sscheds.find(elem => elem.scheduleTime.shouldBeOn === true) !== 'undefined';
                 // 1. If the feature is currently running and the schedule is not on then it will set the priority for the circuit to [scheduled].
                 // 2. If the feature is currently running but there are overlapping schedules then this will catch any schedules that need to be turned off.
@@ -184,12 +189,18 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                                 if (!c.cstate.isOn) {
                                     await sys.board.circuits.setCircuitStateAsync(c.circuitId, true);
                                 }
+                                if (!c.cstate.isOn) {
+                                    logger.warn(`Schedule ${ssched.id} circuit ${c.circuitId}: setCircuitStateAsync returned but cstate.isOn is still false — marking triggered=true anyway. This may be why a scheduled circuit fails to turn on.`);
+                                }
                                 let ssched = c.sscheds[j];
                                 c.cstate.priority = 'scheduled';
                                 ssched.triggered = ssched.isOn = ssched.scheduleTime.shouldBeOn;
                                 ssched.manualPriorityActive = false;
                             }
                         }
+                    }
+                    else {
+                        logger.warn(`Schedule circuit ${c.circuitId} should be on but circuit is off and all matching schedules are already triggered=true — will not fire until schedule window resets.`);
                     }
                 }
                 else if (c.cstate.isOn && !shouldBeOn) {
@@ -198,6 +209,7 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                         let ssched = c.sscheds[j];
                         // Only turn off the schedule if it is not actively mOP.
                         if (c.cstate.isOn && !ssched.manualPriorityActive) await sys.board.circuits.setCircuitStateAsync(c.circuitId, false);
+                        else if (c.cstate.isOn && ssched.manualPriorityActive) logger.warn(`Schedule ${ssched.id} (circuit ${c.circuitId}) window ended but manualPriorityActive=true — not turning off.`);
                         c.cstate.priority = 'manual';
                         // The schedule has expired we need to clear all the info for it.
                         ssched.manualPriorityActive = ssched.triggered = ssched.isOn = c.sscheds[j].scheduleTime.shouldBeOn;

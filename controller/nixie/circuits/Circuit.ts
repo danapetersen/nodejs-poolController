@@ -427,6 +427,9 @@ export class NixieCircuit extends NixieEquipment {
                 if (!val && cstate.isOn) this.timeOff = new Timestamp();
                 cstate.isOn = val;
             }
+            else {
+                logger.warn(`Nixie: setCircuitStateAsync device call for ${cstate.name} (id ${cstate.id}) returned non-200 status ${res.status.code} — isOn NOT updated (still ${cstate.isOn}).`);
+            }
             return res;
         } catch (err) { logger.error(`Nixie: Error setting circuit state ${cstate.id}-${cstate.name} to ${val}`); }
     }

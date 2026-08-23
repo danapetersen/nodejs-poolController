@@ -2103,6 +2103,7 @@ export class PumpCommands extends BoardCommands {
     public setPumpValveDelays(circuitIds: number[], delay?: number) { }
 }
 export class CircuitCommands extends BoardCommands {
+    private _lastEggCheckLog: Map<number, number> = new Map();
     public async restore(rest: { poolConfig: any, poolState: any }, ctx: any, res: RestoreResults): Promise<boolean> {
         try {
             // First delete the circuit/lightGroups that should be removed.
@@ -2227,7 +2228,13 @@ export class CircuitCommands extends BoardCommands {
                 let c = sys.circuits.getItemByIndex(i);
                 let cstate = state.circuits.getItemById(c.id);
                 if (!cstate.isActive || !cstate.isOn || typeof cstate.endTime === 'undefined') continue;
-                logger.warn(`Egg check: circuit ${c.id} isOn=${cstate.isOn} endTime=${cstate.endTime} now=${new Date().toISOString()}`);
+                let lastLog = this._lastEggCheckLog.get(c.id) || 0;
+                if (Date.now() - lastLog >= 60000) {
+                    this._lastEggCheckLog.set(c.id, Date.now());
+                    let endTimeStr: string;
+                    try { endTimeStr = cstate.endTime.toDate().toISOString(); } catch (e) { endTimeStr = `invalid (${cstate.endTime})`; }
+                    logger.warn(`Egg check: circuit ${c.id} isOn=${cstate.isOn} endTime=${endTimeStr} now=${new Date().toISOString()}`);
+                }
                 if (c.master === 1) {
                     await ncp.circuits.checkCircuitEggTimerExpirationAsync(cstate);
                 }
