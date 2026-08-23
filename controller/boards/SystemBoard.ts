@@ -2225,7 +2225,7 @@ export class CircuitCommands extends BoardCommands {
         try {
             for (let i = 0; i < sys.circuits.length; i++) {
                 let c = sys.circuits.getItemByIndex(i);
-                let cstate = state.circuits.getItemByIndex(i);
+                let cstate = state.circuits.getItemById(c.id);
                 if (!cstate.isActive || !cstate.isOn || typeof cstate.endTime === 'undefined') continue;
                 logger.warn(`Egg check: circuit ${c.id} isOn=${cstate.isOn} endTime=${cstate.endTime} now=${new Date().toISOString()}`);
                 if (c.master === 1) {
