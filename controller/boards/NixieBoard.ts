@@ -715,6 +715,7 @@ export class NixieCircuitCommands extends CircuitCommands {
             if (circ.stopDelay) {
                 // Send this off so that the relays are properly set.  In the end we cannot change right now.  If this
                 // happens to be a body circuit then the relay state will be skipped anyway.
+                logger.info(`setCircuitStateAsync: circuit ${id} has stopDelay active — request to set ${val} ignored, reasserting current state ${circ.isOn}.`);
                 await ncp.circuits.setCircuitStateAsync(circ, circ.isOn);
                 return circ;
             }
@@ -914,7 +915,10 @@ export class NixieCircuitCommands extends CircuitCommands {
                             }
                         }
                     }
-                    if (delayCooldown) return cstate;
+                    if (delayCooldown) {
+                        logger.info(`setBodyCircuitStateAsync: circuit ${id} on-request deferred — waiting on heater cooldown delay before body actually turns on.`);
+                        return cstate;
+                    }
                     if (delayPumps === true) sys.board.pumps.setPumpValveDelays([id, bstate.circuit]);
                 }
                 // Now we need to set the startup delay for all the heaters.  This is true whether

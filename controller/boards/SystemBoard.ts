@@ -3086,7 +3086,10 @@ export class CircuitCommands extends BoardCommands {
                         let ssched = sscheds[i];
                         let st = ssched.scheduleTime;
                         // Don't thrown an error on uncalculable schedules.
-                        if (typeof st === 'undefined' || typeof st.startTime === 'undefined' || typeof st.endTime === 'undefined') continue;
+                        if (typeof st === 'undefined' || !st.startTime || !st.endTime) {
+                            logger.info(`setEndTime: schedule ${ssched.id} has no calculable start/end time — skipping for circuit ${thing.id}.`);
+                            continue;
+                        }
                         if (ssched.isOn ||
                             (typeof eggTime !== 'undefined' && st.startTime.getTime() < eggTime.getTime())) {
                             // If the schedule is on or it will start within the egg timer then we need the max end time of the schedule.
@@ -3097,8 +3100,12 @@ export class CircuitCommands extends BoardCommands {
                         }
                     }
                 }
-                //console.log({ f: bForce, isOn:isOn, eggTime: Timestamp.toISOLocal(eggTime), schedTime: Timestamp.toISOLocal(schedTime) });
-                if (typeof schedTime !== 'undefined' && schedTime) thingState.endTime = new Timestamp(schedTime);
+                if (typeof schedTime !== 'undefined' && schedTime) {
+                    if (typeof eggTime !== 'undefined' && eggTime && schedTime.getTime() !== eggTime.getTime()) {
+                        logger.info(`setEndTime: circuit/thing ${thing.id} endTime set from schedule (${schedTime.toISOString()}) instead of egg timer (${eggTime.toISOString()}).`);
+                    }
+                    thingState.endTime = new Timestamp(schedTime);
+                }
                 else if (typeof eggTime !== 'undefined' && eggTime) thingState.endTime = new Timestamp(eggTime);
                 else thingState.endTime = undefined;
             }
@@ -3761,7 +3768,7 @@ export class ScheduleCommands extends BoardCommands {
                 }
                 ssched.emitEquipmentChange();
             }
-        } catch (err) { logger.error(`Error synchronizing schedule states`); }
+        } catch (err) { logger.error(`Error synchronizing schedule states: ${err.message}`); }
     }
     public async setEggTimerAsync(data?: any, send: boolean = true): Promise<EggTimer> { return Promise.resolve(sys.eggTimers.getItemByIndex(1)); }
     public async deleteEggTimerAsync(data?: any): Promise<EggTimer> { return Promise.resolve(sys.eggTimers.getItemByIndex(1)); }

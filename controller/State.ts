@@ -1192,7 +1192,10 @@ export class ScheduleStateCollection extends EqStateCollection<ScheduleState> {
                 continue;
             }
             st.calcSchedule(state.time, sys.schedules.getItemById(ssched.id));
-            if (typeof st.startTime === 'undefined') continue;
+            if (!st.startTime) {
+                logger.info(`Schedule ${ssched.id} (circuit ${ssched.circuit}): calcSchedule produced no valid startTime — excluded from active schedules this cycle.`);
+                continue;
+            }
             if (ssched.isOn || st.shouldBeOn || (st.startTime && st.startTime.getTime() > new Date().getTime())) activeScheds.push(ssched);
         }
         return activeScheds;

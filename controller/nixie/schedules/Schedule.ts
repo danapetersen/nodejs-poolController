@@ -105,7 +105,7 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                 let c = circuits[i];
                 if (!c.hasNixie) {
                     if (c.sscheds.some(elem => elem.scheduleTime.shouldBeOn === true)) {
-                        logger.warn(`Schedule circuit ${c.circuitId} should be on but hasNixie=false — schedule master mismatch, skipping.`);
+                        logger.info(`Schedule circuit ${c.circuitId} should be on but hasNixie=false — schedule master mismatch, skipping.`);
                     }
                     continue; // If this has nothing to do with Nixie move on.
                 }
@@ -136,6 +136,7 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                         // If this schedule is turned back on then the egg timer will come into play.  This is all that is required
                         // for the mOP function.  The setEndDate for the circuit makes the determination as to when off will occur.
                         if (mOP && ssched.scheduleTime.shouldBeOn && ssched.triggered) {
+                            if (!ssched.manualPriorityActive) logger.info(`Schedule ${ssched.id} (circuit ${c.circuitId}): manualPriorityActive set to true — schedule held off until manual override resolves.`);
                             ssched.manualPriorityActive = true;
                         }
                         // The reason we check to see if anything has not been triggered is so we do not have to perform the circuit changes
@@ -190,7 +191,7 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                                     await sys.board.circuits.setCircuitStateAsync(c.circuitId, true);
                                 }
                                 if (!c.cstate.isOn) {
-                                    logger.warn(`Schedule ${ssched.id} circuit ${c.circuitId}: setCircuitStateAsync returned but cstate.isOn is still false — marking triggered=true anyway. This may be why a scheduled circuit fails to turn on.`);
+                                    logger.info(`Schedule ${ssched.id} circuit ${c.circuitId}: setCircuitStateAsync returned but cstate.isOn is still false — marking triggered=true anyway. This may be why a scheduled circuit fails to turn on.`);
                                 }
                                 c.cstate.priority = 'scheduled';
                                 ssched.triggered = ssched.isOn = ssched.scheduleTime.shouldBeOn;
@@ -199,7 +200,7 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                         }
                     }
                     else {
-                        logger.warn(`Schedule circuit ${c.circuitId} should be on but circuit is off and all matching schedules are already triggered=true — will not fire until schedule window resets.`);
+                        logger.info(`Schedule circuit ${c.circuitId} should be on but circuit is off and all matching schedules are already triggered=true — will not fire until schedule window resets.`);
                     }
                 }
                 else if (c.cstate.isOn && !shouldBeOn) {
@@ -208,7 +209,7 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                         let ssched = c.sscheds[j];
                         // Only turn off the schedule if it is not actively mOP.
                         if (c.cstate.isOn && !ssched.manualPriorityActive) await sys.board.circuits.setCircuitStateAsync(c.circuitId, false);
-                        else if (c.cstate.isOn && ssched.manualPriorityActive) logger.warn(`Schedule ${ssched.id} (circuit ${c.circuitId}) window ended but manualPriorityActive=true — not turning off.`);
+                        else if (c.cstate.isOn && ssched.manualPriorityActive) logger.info(`Schedule ${ssched.id} (circuit ${c.circuitId}) window ended but manualPriorityActive=true — not turning off.`);
                         c.cstate.priority = 'manual';
                         // The schedule has expired we need to clear all the info for it.
                         ssched.manualPriorityActive = ssched.triggered = ssched.isOn = c.sscheds[j].scheduleTime.shouldBeOn;
