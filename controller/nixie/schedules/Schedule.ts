@@ -13,6 +13,13 @@ import { time } from 'console';
 
 
 export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSchedule> {
+    private _lastTraceLog: Map<string, number> = new Map();
+    private _shouldLogTrace(key: string, throttleMs: number = 60000): boolean {
+        let last = this._lastTraceLog.get(key) || 0;
+        if (Date.now() - last < throttleMs) return false;
+        this._lastTraceLog.set(key, Date.now());
+        return true;
+    }
     public async setScheduleAsync(schedule: Schedule, data: any) {
         // By the time we get here we know that we are in control and this is a schedule we should be in control of.
         try {
@@ -104,7 +111,7 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
             for (let i = 0; i < circuits.length; i++) {
                 let c = circuits[i];
                 if (!c.hasNixie) {
-                    if (c.sscheds.some(elem => elem.scheduleTime.shouldBeOn === true)) {
+                    if (c.sscheds.some(elem => elem.scheduleTime.shouldBeOn === true) && this._shouldLogTrace(`hasNixie:${c.circuitId}`)) {
                         logger.info(`Schedule circuit ${c.circuitId} should be on but hasNixie=false — schedule master mismatch, skipping.`);
                     }
                     continue; // If this has nothing to do with Nixie move on.
@@ -152,9 +159,9 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                             // If this is a body circuit then we need to set the heat mode and the temperature but only do this once. If
                             // the user changes it later then that is on them.
                             for (let j = 0; j < c.sscheds.length; j++) {
-                                if (sscheds[j].triggered) continue;
-                                let ssched = sscheds[j];
-                                let hs = sys.board.valueMaps.heatSources.transform(c.sscheds[i].heatSource);
+                                if (c.sscheds[j].triggered) continue;
+                                let ssched = c.sscheds[j];
+                                let hs = sys.board.valueMaps.heatSources.transform(ssched.heatSource);
                                 switch (hs.name) {
                                     case 'nochange':
                                     case 'dontchange':
@@ -200,7 +207,9 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                         }
                     }
                     else {
-                        logger.info(`Schedule circuit ${c.circuitId} should be on but circuit is off and all matching schedules are already triggered=true — will not fire until schedule window resets.`);
+                        if (this._shouldLogTrace(`stuckTriggered:${c.circuitId}`)) {
+                            logger.info(`Schedule circuit ${c.circuitId} should be on but circuit is off and all matching schedules are already triggered=true — will not fire until schedule window resets.`);
+                        }
                     }
                 }
                 else if (c.cstate.isOn && !shouldBeOn) {
@@ -209,7 +218,7 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                         let ssched = c.sscheds[j];
                         // Only turn off the schedule if it is not actively mOP.
                         if (c.cstate.isOn && !ssched.manualPriorityActive) await sys.board.circuits.setCircuitStateAsync(c.circuitId, false);
-                        else if (c.cstate.isOn && ssched.manualPriorityActive) logger.info(`Schedule ${ssched.id} (circuit ${c.circuitId}) window ended but manualPriorityActive=true — not turning off.`);
+                        else if (c.cstate.isOn && ssched.manualPriorityActive && this._shouldLogTrace(`manualPriority:${ssched.id}`)) logger.info(`Schedule ${ssched.id} (circuit ${c.circuitId}) window ended but manualPriorityActive=true — not turning off.`);
                         c.cstate.priority = 'manual';
                         // The schedule has expired we need to clear all the info for it.
                         ssched.manualPriorityActive = ssched.triggered = ssched.isOn = c.sscheds[j].scheduleTime.shouldBeOn;

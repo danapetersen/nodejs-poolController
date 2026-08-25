@@ -1180,6 +1180,7 @@ export class PumpState extends EqState {
 }
 export class ScheduleStateCollection extends EqStateCollection<ScheduleState> {
     public createItem(data: any): ScheduleState { return new ScheduleState(data); }
+    private _lastNoStartTimeLog: Map<number, number> = new Map();
     public getActiveSchedules(): ScheduleState[] {
         let activeScheds: ScheduleState[] = [];
         for (let i = 0; i < this.length; i++) {
@@ -1193,7 +1194,11 @@ export class ScheduleStateCollection extends EqStateCollection<ScheduleState> {
             }
             st.calcSchedule(state.time, sys.schedules.getItemById(ssched.id));
             if (!st.startTime) {
-                logger.info(`Schedule ${ssched.id} (circuit ${ssched.circuit}): calcSchedule produced no valid startTime — excluded from active schedules this cycle.`);
+                let last = this._lastNoStartTimeLog.get(ssched.id) || 0;
+                if (Date.now() - last >= 60000) {
+                    this._lastNoStartTimeLog.set(ssched.id, Date.now());
+                    logger.info(`Schedule ${ssched.id} (circuit ${ssched.circuit}): calcSchedule produced no valid startTime — excluded from active schedules this cycle.`);
+                }
                 continue;
             }
             if (ssched.isOn || st.shouldBeOn || (st.startTime && st.startTime.getTime() > new Date().getTime())) activeScheds.push(ssched);

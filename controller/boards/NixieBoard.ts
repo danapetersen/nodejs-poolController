@@ -1667,8 +1667,11 @@ export class NixieFeatureCommands extends FeatureCommands {
                     }
                 }
                 let sgrp = state.circuitGroups.getItemById(grp.id);
-                if (bIsOn && typeof sgrp.endTime === 'undefined') {
-                    sys.board.circuits.setEndTime(grp, sgrp, bIsOn, true);
+                if (bIsOn) {
+                    if (typeof sgrp.endTime === 'undefined') sys.board.circuits.setEndTime(grp, sgrp, bIsOn, true);
+                }
+                else {
+                    sgrp.endTime = undefined;
                 }
                 sgrp.isOn = bIsOn;
 
@@ -1693,7 +1696,12 @@ export class NixieFeatureCommands extends FeatureCommands {
                 }
                 let sgrp = state.lightGroups.getItemById(grp.id);
                 sgrp.isOn = bIsOn;
-                if (sgrp.isOn && typeof sgrp.endTime === 'undefined') sys.board.circuits.setEndTime(grp, sgrp, sgrp.isOn, true);
+                if (sgrp.isOn) {
+                    if (typeof sgrp.endTime === 'undefined') sys.board.circuits.setEndTime(grp, sgrp, sgrp.isOn, true);
+                }
+                else {
+                    sgrp.endTime = undefined;
+                }
                 if (!sgrp.isOn && sgrp.manualPriorityActive){
                     delayMgr.cancelManualPriorityDelay(grp.id);
                     sgrp.manualPriorityActive = false; // if the delay was previously cancelled, still need to turn this off
