@@ -440,6 +440,10 @@ export class NixieCircuit extends NixieEquipment {
             if (!cstate.isActive || !cstate.isOn) return;
             if (typeof cstate.endTime !== 'undefined') {
                 if (cstate.endTime.toDate() < new Timestamp().toDate()) {
+                    // TRACE (schedule-test branch, diagnostic only): this is the egg-timer path forcing a circuit
+                    // off independently of triggerSchedules() — if this fires for circuit 2/6 before the schedule
+                    // itself believes its window has closed, this is turning isOn false ahead of shouldBeOn.
+                    logger.warn(`TRACE checkCircuitEggTimerExpirationAsync: circuit ${cstate.id} endTime ${cstate.endTime.toDate().toISOString()} has passed — forcing off. now=${new Date().toISOString()}`);
                     await sys.board.circuits.setCircuitStateAsync(cstate.id, false);
                     cstate.emitEquipmentChange();
                 }

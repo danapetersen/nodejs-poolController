@@ -3073,7 +3073,12 @@ export class CircuitCommands extends BoardCommands {
         3. Iterate over each schedule for 1-2 above; nearest end time wins
         */
         try {
-            if (!isOn) thingState.startTime = thingState.endTime = undefined;
+            if (!isOn) {
+                // TRACE (schedule-test branch, diagnostic only): mark whenever a circuit's tracked start/end time
+                // gets cleared, so we can see who is turning it off and when relative to the schedule's own view.
+                logger.warn(`TRACE setEndTime: circuit ${thing.id} isOn=false — clearing startTime/endTime. priorEndTime=${thingState.endTime ? thingState.endTime.toDate().toISOString() : 'null'} now=${new Date().toISOString()}`);
+                thingState.startTime = thingState.endTime = undefined;
+            }
             else if (!thingState.isOn && isOn || bForce) {
                 if (!thingState.isOn && isOn && typeof thingState.startTime === 'undefined') thingState.startTime = new Timestamp(new Date());
                 let schedTime: Date;
@@ -3108,6 +3113,8 @@ export class CircuitCommands extends BoardCommands {
                 }
                 else if (typeof eggTime !== 'undefined' && eggTime) thingState.endTime = new Timestamp(eggTime);
                 else thingState.endTime = undefined;
+                // TRACE (schedule-test branch, diagnostic only): show exactly which source won and the final value.
+                logger.warn(`TRACE setEndTime: circuit ${thing.id} isOnTransition=${!thingState.isOn && isOn} bForce=${bForce} schedTime=${schedTime ? schedTime.toISOString() : 'undefined'} eggTime=${eggTime ? eggTime.toISOString() : 'undefined'} finalEndTime=${thingState.endTime ? thingState.endTime.toDate().toISOString() : 'undefined'} now=${new Date().toISOString()}`);
             }
         }
         catch (err) {
@@ -3752,6 +3759,10 @@ export class ScheduleCommands extends BoardCommands {
                 if (scirc.isOn && !mOP && ssched.scheduleTime.shouldBeOn) schedIsOn = true
                 else schedIsOn = false;
                 if (schedIsOn !== ssched.isOn) {
+                    // TRACE (schedule-test branch, diagnostic only): this is the second, independent writer of
+                    // ssched.isOn — it recomputes from the live circuit state right after triggerSchedules() runs,
+                    // and can flip isOn without triggerSchedules() itself ever having decided to.
+                    logger.warn(`TRACE syncScheduleStates: Schedule ${ssched.id} (circuit ${ssched.circuit}) isOn ${ssched.isOn} -> ${schedIsOn} | scircIsOn=${scirc.isOn} mOP=${mOP} shouldBeOn=${ssched.scheduleTime.shouldBeOn} triggered=${ssched.triggered} now=${new Date().toISOString()}`);
                     // if the schedule state changes, it may affect the end time
                     ssched.isOn = schedIsOn;
                     sys.board.circuits.setEndTime(sys.circuits.getInterfaceById(ssched.circuit), scirc, scirc.isOn, true);

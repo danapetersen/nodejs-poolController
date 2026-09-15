@@ -1181,6 +1181,11 @@ export class PumpState extends EqState {
 export class ScheduleStateCollection extends EqStateCollection<ScheduleState> {
     public createItem(data: any): ScheduleState { return new ScheduleState(data); }
     private _lastNoStartTimeLog: Map<number, number> = new Map();
+    // TRACE (schedule-test branch, diagnostic only): last known active-list membership per schedule id,
+    // so we can log the exact moment a schedule enters/exits getActiveSchedules() along with the values
+    // that drove the decision. Used to catch the isOn/shouldBeOn/triggered state right as a schedule
+    // drops out of consideration.
+    private _lastActiveMembership: Map<number, boolean> = new Map();
     public getActiveSchedules(): ScheduleState[] {
         let activeScheds: ScheduleState[] = [];
         for (let i = 0; i < this.length; i++) {
@@ -1201,7 +1206,14 @@ export class ScheduleStateCollection extends EqStateCollection<ScheduleState> {
                 }
                 continue;
             }
-            if (ssched.isOn || st.shouldBeOn || (st.startTime && st.startTime.getTime() > new Date().getTime())) activeScheds.push(ssched);
+            let isActive = ssched.isOn || st.shouldBeOn || (st.startTime && st.startTime.getTime() > new Date().getTime());
+            // TRACE (schedule-test branch, diagnostic only)
+            let wasActive = this._lastActiveMembership.get(ssched.id);
+            if (wasActive !== isActive) {
+                this._lastActiveMembership.set(ssched.id, isActive);
+                logger.warn(`TRACE getActiveSchedules: Schedule ${ssched.id} (circuit ${ssched.circuit}) membership ${wasActive} -> ${isActive} | isOn=${ssched.isOn} shouldBeOn=${st.shouldBeOn} triggered=${ssched.triggered} startTime=${st.startTime ? st.startTime.toISOString() : 'null'} endTime=${st.endTime ? st.endTime.toISOString() : 'null'} calculatedDate=${st.calculatedDate ? st.calculatedDate.toISOString() : 'null'} now=${new Date().toISOString()}`);
+            }
+            if (isActive) activeScheds.push(ssched);
         }
         return activeScheds;
     }
@@ -1308,12 +1320,16 @@ export class ScheduleTime extends ChildEqState {
                 return true;
             }
             let tm = ts.getTime();
+            // TRACE (schedule-test branch, diagnostic only): show the three candidate ranges and reference time
+            // before branch selection, so we can see exactly which range calcScheduleDate is choosing between.
+            logger.warn(`TRACE calcScheduleDate: Schedule ${sched.id} ts=${ts.toDate().toISOString()} ytimes=[${ytimes.startTime ? ytimes.startTime.toISOString() : 'null'},${ytimes.endTime ? ytimes.endTime.toISOString() : 'null'}] ttimes=[${ttimes.startTime ? ttimes.startTime.toISOString() : 'null'},${ttimes.endTime ? ttimes.endTime.toISOString() : 'null'}] ntimes=[${ntimes.startTime ? ntimes.startTime.toISOString() : 'null'},${ntimes.endTime ? ntimes.endTime.toISOString() : 'null'}]`);
             if (fnInRange(tm, ttimes)) {
                 // Check the dow.
                 let sd = schedDays.find(elem => elem.dow === ttimes.startTime.getDay());
                 if (typeof sd !== 'undefined' && (sched.scheduleDays & sd.bitval) !== 0) {
                     times.startTime = ttimes.startTime;
                     times.endTime = ttimes.endTime;
+                    logger.warn(`TRACE calcScheduleDate: Schedule ${sched.id} branch=today-in-range start=${times.startTime.toISOString()} end=${times.endTime.toISOString()}`);
                     return times;
                 }
             }
@@ -1325,6 +1341,7 @@ export class ScheduleTime extends ChildEqState {
                 if (typeof sd !== 'undefined' && (sched.scheduleDays & sd.bitval) !== 0) {
                     times.startTime = ytimes.startTime;
                     times.endTime = ytimes.endTime;
+                    logger.warn(`TRACE calcScheduleDate: Schedule ${sched.id} branch=yesterday-still-running start=${times.startTime.toISOString()} end=${times.endTime.toISOString()}`);
                     return times;
                 }
             }
@@ -1335,6 +1352,7 @@ export class ScheduleTime extends ChildEqState {
                 if (typeof sd !== 'undefined' && (sched.scheduleDays & sd.bitval) !== 0) {
                     times.startTime = ttimes.startTime;
                     times.endTime = ttimes.endTime;
+                    logger.warn(`TRACE calcScheduleDate: Schedule ${sched.id} branch=today-upcoming start=${times.startTime.toISOString()} end=${times.endTime.toISOString()}`);
                     return times;
                 }
             }
@@ -1344,9 +1362,11 @@ export class ScheduleTime extends ChildEqState {
                 if (typeof sd !== 'undefined' && (sched.scheduleDays & sd.bitval) !== 0) {
                     times.startTime = ntimes.startTime;
                     times.endTime = ntimes.endTime;
+                    logger.warn(`TRACE calcScheduleDate: Schedule ${sched.id} branch=tomorrow start=${times.startTime.toISOString()} end=${times.endTime.toISOString()}`);
                     return times;
                 }
             }
+            logger.warn(`TRACE calcScheduleDate: Schedule ${sched.id} branch=none-matched — no valid dow found in any range.`);
             return times;
         } catch (err) {
             logger.error(`Error calculating date for schedule ${sched.id}: ${err.message}`);
@@ -1365,14 +1385,19 @@ export class ScheduleTime extends ChildEqState {
             // next run time.
             let dtCalc = typeof this.calculatedDate !== 'undefined' && typeof this.calculatedDate.getTime === 'function' ? new Date(this.calculatedDate.getTime()).setHours(0, 0, 0, 0) : new Date(1970, 0, 1, 0, 0).getTime();
             let recalc = !this.calculated;
-            if (!recalc && sod.getTime() !== dtCalc) recalc = true;
+            // TRACE (schedule-test branch, diagnostic only)
+            let recalcReason = recalc ? 'not-calculated' : '';
+            if (!recalc && sod.getTime() !== dtCalc) { recalc = true; recalcReason = 'day-changed'; }
             let schedType = sys.board.valueMaps.scheduleTypes.transform(sched.scheduleType);
             if (!recalc && schedType.name !== 'runonce' && (this.endTime && this.endTime.getTime() < new Date().getTime() && this.startTime && this.startTime.getTime() < dtCalc)) {
                 recalc = true;
+                recalcReason = 'expired-mid-day';
                 logger.info(`Recalculating expired schedule ${sched.id}`);
             }
             if (!recalc) return this.shouldBeOn;
             //if (this.calculated && sod.getTime() === dtCalc) return this.shouldBeOn;
+            // TRACE (schedule-test branch, diagnostic only): capture the state right before it gets overwritten.
+            logger.warn(`TRACE calcSchedule: Schedule ${sched.id} recalculating (reason=${recalcReason}) oldStart=${this.startTime ? this.startTime.toISOString() : 'null'} oldEnd=${this.endTime ? this.endTime.toISOString() : 'null'} oldCalculatedDate=${this.calculatedDate ? this.calculatedDate.toISOString() : 'null'} sod=${sod.toDate().toISOString()} dtCalc=${new Date(dtCalc).toISOString()} now=${currentTime.toDate().toISOString()}`);
             this.calculatedDate = new Date(new Date().setHours(0, 0, 0, 0));
             if (sched.isActive === false || sched.disabled) return false;
             let tt = sys.board.valueMaps.scheduleTimeTypes.transform(sched.startTimeType);
@@ -1382,11 +1407,13 @@ export class ScheduleTime extends ChildEqState {
                 this.startTime = times.startTime;
                 this.endTime = times.endTime;
                 this.calculated = true;
+                logger.warn(`TRACE calcSchedule: Schedule ${sched.id} recalculated via primary path newStart=${this.startTime.toISOString()} newEnd=${this.endTime.toISOString()}`);
                 return this.shouldBeOn;
             }
             else {
                 // Chances are that the current dow is not valid.  Fast forward until we get a day that works.  That will
                 // be the next scheduled run date.
+                logger.warn(`TRACE calcSchedule: Schedule ${sched.id} primary path produced no usable window (times.startTime=${times.startTime ? times.startTime.toISOString() : 'null'} times.endTime=${times.endTime ? times.endTime.toISOString() : 'null'}) — falling back to fast-forward search.`);
                 if (schedType.name !== 'runonce' && sched.scheduleDays > 0) {
                     let schedDays = sys.board.valueMaps.scheduleDays.toArray();
                     let day = sod.clone().addHours(24);
@@ -1403,6 +1430,7 @@ export class ScheduleTime extends ChildEqState {
                 this.startTime = times.startTime;
                 this.endTime = times.endTime;
                 this.calculated = true;
+                logger.warn(`TRACE calcSchedule: Schedule ${sched.id} recalculated via fast-forward path newStart=${this.startTime ? this.startTime.toISOString() : 'null'} newEnd=${this.endTime ? this.endTime.toISOString() : 'null'}`);
             }
             return this.shouldBeOn;
         } catch (err) {

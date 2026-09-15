@@ -20,6 +20,9 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
         this._lastTraceLog.set(key, Date.now());
         return true;
     }
+    // TRACE (schedule-test branch, diagnostic only): last known isOn/shouldBeOn per circuit id, so we can
+    // log the exact moment either one flips for a circuit, with a full snapshot of each schedule mapped to it.
+    private _lastCircuitTrace: Map<number, { isOn: boolean, shouldBeOn: boolean }> = new Map();
     public async setScheduleAsync(schedule: Schedule, data: any) {
         // By the time we get here we know that we are in control and this is a schedule we should be in control of.
         try {
@@ -60,7 +63,7 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
             for (let i = 0; i < sscheds.length; i++) {
                 // We only care about schedules that are currently running or should be running.
                 if (!sscheds[i].isOn && !sscheds[i].scheduleTime.shouldBeOn) {
-                    if (sscheds[i].triggered) {
+                    if (sscheds[i].triggered && this._shouldLogTrace(`stuckWhileInactive:${sscheds[i].id}`, 86400000)) {
                         logger.warn(`Schedule ${sscheds[i].id} (circuit ${sscheds[i].circuit}) has triggered=true while inactive — will not fire again until reset.`);
                     }
                     continue;
@@ -117,6 +120,16 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                     continue; // If this has nothing to do with Nixie move on.
                 }
                 let shouldBeOn = typeof c.sscheds.find(elem => elem.scheduleTime.shouldBeOn === true) !== 'undefined';
+                // TRACE (schedule-test branch, diagnostic only): log the exact moment isOn or shouldBeOn flips for this circuit.
+                {
+                    let prev = this._lastCircuitTrace.get(c.circuitId);
+                    let cur = { isOn: c.cstate.isOn, shouldBeOn };
+                    if (!prev || prev.isOn !== cur.isOn || prev.shouldBeOn !== cur.shouldBeOn) {
+                        this._lastCircuitTrace.set(c.circuitId, cur);
+                        let schedSnapshot = c.sscheds.map(s => ({ id: s.id, triggered: s.triggered, isOn: s.isOn, shouldBeOn: s.scheduleTime.shouldBeOn, endTime: s.scheduleTime.endTime ? s.scheduleTime.endTime.toISOString() : null }));
+                        logger.warn(`TRACE triggerSchedules: circuit ${c.circuitId} isOn ${prev ? prev.isOn : 'n/a'}->${cur.isOn} shouldBeOn ${prev ? prev.shouldBeOn : 'n/a'}->${cur.shouldBeOn} now=${new Date().toISOString()} scheds=${JSON.stringify(schedSnapshot)}`);
+                    }
+                }
                 // 1. If the feature is currently running and the schedule is not on then it will set the priority for the circuit to [scheduled].
                 // 2. If the feature is currently running but there are overlapping schedules then this will catch any schedules that need to be turned off.
                 if (c.cstate.isOn && shouldBeOn) {
@@ -266,6 +279,10 @@ export class NixieSchedule extends NixieEquipment {
         try {
             let schedule = this.schedule;
             let sschedule = state.schedules.getItemById(schedule.id);
+            // TRACE (schedule-test branch, diagnostic only): mark the exact moment an edit invalidates the
+            // cached calculation, so this can be correlated against the calcSchedule/calcScheduleDate traces
+            // that follow.
+            logger.warn(`TRACE setScheduleAsync: Schedule ${schedule.id} edited — forcing calculated=false. priorStart=${sschedule.scheduleTime.startTime ? sschedule.scheduleTime.startTime.toISOString() : 'null'} priorEnd=${sschedule.scheduleTime.endTime ? sschedule.scheduleTime.endTime.toISOString() : 'null'} triggered=${sschedule.triggered} isOn=${sschedule.isOn} now=${new Date().toISOString()}`);
             sschedule.scheduleTime.calculated = false;
         }
         catch (err) { logger.error(`Nixie setScheduleAsync: ${err.message}`); return Promise.reject(err); }
