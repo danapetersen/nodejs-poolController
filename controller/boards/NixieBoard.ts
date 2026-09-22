@@ -1659,22 +1659,28 @@ export class NixieFeatureCommands extends FeatureCommands {
                 let bIsOn = true;
                 // Iterate the circuits and break out should we find a condition
                 // where the group should be off.
+                let hasScheduledMember = false;
                 for (let j = 0; j < circuits.length && bIsOn === true; j++) {
                     let circuit: CircuitGroupCircuit = grp.circuits.getItemByIndex(j);
                     let cstate = state.circuits.getInterfaceById(circuit.circuit);
                     // RSG: desiredState for Nixie is 1=on, 2=off, 3=ignore
                     if (circuit.desiredState === 1 || circuit.desiredState === 4) {
                         // The circuit should be on if the value is 1.
-                        // If we are on 'ignore' we should still only treat the circuit as 
+                        // If we are on 'ignore' we should still only treat the circuit as
                         // desiredstate = 1.
                         if (!utils.makeBool(cstate.isOn)) bIsOn = false;
+                        else if (this.circuitHasActiveSchedule(circuit.circuit)) hasScheduledMember = true;
                     }
                     else if (circuit.desiredState === 2 || circuit.desiredState === 5) { // The circuit should be off.
                         if (utils.makeBool(cstate.isOn)) bIsOn = false;
                     }
                 }
                 let sgrp = state.circuitGroups.getItemById(grp.id);
-                if (bIsOn && typeof sgrp.endTime === 'undefined') {
+                // Only arm the group's own egg timer the first time it is observed to be on. If one of the
+                // member circuits driving that inference is only on because a schedule owns it directly, the
+                // group itself was never actually commanded on -- don't let a phantom egg timer force that
+                // circuit off out from under its schedule (see issue 1243).
+                if (bIsOn && typeof sgrp.endTime === 'undefined' && !hasScheduledMember) {
                     sys.board.circuits.setEndTime(grp, sgrp, bIsOn, true);
                 }
                 sgrp.isOn = bIsOn;
@@ -1710,6 +1716,16 @@ export class NixieFeatureCommands extends FeatureCommands {
             sys.board.valves.syncValveStates();
         }
         state.emitEquipmentChanges();
+    }
+    // Returns true if the circuit is currently on because a schedule targeting it directly still
+    // wants it on. Used to keep an inferred circuit-group "on" state from arming its own egg timer
+    // and later force-turning off a circuit that a schedule is independently in the middle of running (#1243).
+    private circuitHasActiveSchedule(circuitId: number): boolean {
+        for (let i = 0; i < state.schedules.length; i++) {
+            let ssched = state.schedules.getItemByIndex(i);
+            if (ssched.circuit === circuitId && ssched.scheduleTime.shouldBeOn) return true;
+        }
+        return false;
     }
 }
 export class NixiePumpCommands extends PumpCommands {
