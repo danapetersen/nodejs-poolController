@@ -52,7 +52,20 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
             let circuits: { circuitId: number, cstate: ICircuitState, hasNixie: boolean, sscheds: ScheduleState[] }[] = []
             for (let i = 0; i < sscheds.length; i++) {
                 // We only care about schedules that are currently running or should be running.
-                if (!sscheds[i].isOn && !sscheds[i].scheduleTime.shouldBeOn) continue;
+                if (!sscheds[i].isOn && !sscheds[i].scheduleTime.shouldBeOn) {
+                    // Neither on nor wanted on -- if triggered is still true here, it's stale: whatever
+                    // turned this circuit off did so before the schedule's own end-of-window branches
+                    // (further below) ever got a chance to clear it, and since neither of those branches
+                    // runs for a schedule that gets skipped here, nothing would ever clear it otherwise --
+                    // it would stay stuck permanently, blocking this schedule the next time its window
+                    // opens (#1243). Clearing it here is always safe: shouldBeOn is false, so nothing
+                    // turns the circuit on as a result -- this only corrects stale bookkeeping.
+                    if (sscheds[i].triggered) {
+                        logger.warn(`Schedule ${sscheds[i].id} (circuit ${sscheds[i].circuit}) was marked triggered while inactive (isOn=false, shouldBeOn=false) -- clearing stale triggered state.`);
+                        sscheds[i].triggered = false;
+                    }
+                    continue;
+                }
                 let circ = circuits.find(elem => elem.circuitId === sscheds[i].circuit);
                 let sched = sys.schedules.getItemById(sscheds[i].id)
                 if (typeof circ === 'undefined') circuits.push({
@@ -141,9 +154,9 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                             // If this is a body circuit then we need to set the heat mode and the temperature but only do this once. If
                             // the user changes it later then that is on them.
                             for (let j = 0; j < c.sscheds.length; j++) {
-                                if (sscheds[j].triggered) continue;
-                                let ssched = sscheds[j];
-                                let hs = sys.board.valueMaps.heatSources.transform(c.sscheds[i].heatSource);
+                                if (c.sscheds[j].triggered) continue;
+                                let ssched = c.sscheds[j];
+                                let hs = sys.board.valueMaps.heatSources.transform(ssched.heatSource);
                                 switch (hs.name) {
                                     case 'nochange':
                                     case 'dontchange':
